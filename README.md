@@ -87,8 +87,14 @@ regex constraints with no Flask converter equivalent all raise an
 error rather than producing a route that doesn't actually match what
 the original did.
 
+## Running the tests
+
+```
+$ python -m unittest discover -s tests
+```
+
 ## Status
 
-Early skeleton. No test suite yet, and only Flask/Werkzeug and
-Express are supported (see the source for exactly which constraints
-translate). Standard library only, no dependencies.
+Early skeleton. Only Flask/Werkzeug and Express are supported (see
+the source for exactly which constraints translate). Standard
+library only, no dependencies.
