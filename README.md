@@ -1,26 +1,34 @@
 # routeconv
 
-Converts URL route patterns between Flask/Werkzeug syntax and
+Converts URL route patterns between Flask/Werkzeug, Django and
 Express-style syntax.
 
-If you're porting routes between a Flask backend and a Node/Express
-one (or writing an OpenAPI spec by hand and need both), you end up
-translating things like this by eye:
+If you're porting routes between a Flask or Django backend and a
+Node/Express one (or writing an OpenAPI spec by hand and need both),
+you end up translating things like this by eye:
 
 ```
 Flask:    /users/<int:id>/posts/<slug>
 Express:  /users/:id(\d+)/posts/:slug
 ```
 
-It's mechanical, but the two syntaxes don't map 1:1 - Flask has a
-fixed set of typed converters (`int`, `float`, `uuid`, `path`,
-`string`), Express lets you bolt on any regex, and Express has
-features (optional params, wildcards) that Flask just doesn't have.
-Getting that translation wrong produces a route that silently matches
-the wrong thing, so this tool tries hard to fail loudly and precisely
-instead of guessing.
+It's mechanical, but the syntaxes don't map 1:1. Flask and Django both
+write a typed parameter as `<converter:name>`, but they ship different
+converters (Django has no `float`, Flask has no `slug`) and even
+converters both have use different regexes under the hood (Flask's
+`uuid` is case-insensitive, Django's is lowercase-only). Express lets
+you bolt on any regex, and has features (optional params, wildcards)
+that neither of the others have. Getting a translation wrong produces
+a route that silently matches the wrong thing, so this tool tries hard
+to fail loudly and precisely instead of guessing.
 
 ## Usage
+
+`--to` picks the output format. `--from` picks the input format; it
+can be omitted when converting between `flask` and `express`, since
+each one unambiguously implies the other, but it's required for
+`django`, since a bracket-syntax pattern could be either Flask or
+Django.
 
 ```
 $ echo '/users/<int:id>/posts/<slug>' | python -m routeconv --to express
@@ -28,7 +36,17 @@ $ echo '/users/<int:id>/posts/<slug>' | python -m routeconv --to express
 
 $ echo '/users/:id(\d+)/posts/:slug' | python -m routeconv --to flask
 /users/<int:id>/posts/<slug>
+
+$ echo '/users/<int:pk>' | python -m routeconv --to express --from django
+/users/:pk([0-9]+)
+
+$ echo '/users/:pk([0-9]+)' | python -m routeconv --to django --from express
+/users/<int:pk>
 ```
+
+Only conversions to and from Express are implemented directly right
+now; converting straight between Flask and Django isn't supported yet
+(route it through Express as an intermediate).
 
 Or convert a whole file of routes, one pattern per line (blank lines
 and lines starting with `#` are skipped):
@@ -82,10 +100,18 @@ and every error goes to stderr with its own line number.
 | `<uuid:x>`  | `:x([0-9a-fA-F]{8}-...)` |
 | `<path:x>`  | `:x(.*)`                  |
 
+| Django       | Express regex constraint |
+|--------------|---------------------------|
+| `<name>`     | `:name` (no constraint)   |
+| `<int:x>`    | `:x([0-9]+)`              |
+| `<slug:x>`   | `:x([-a-zA-Z0-9_]+)`      |
+| `<uuid:x>`   | `:x([0-9a-f]{8}-...)`    |
+| `<path:x>`   | `:x(.+)`                  |
+
 Express wildcards (`*`), optional segments (`:x?`), and arbitrary
-regex constraints with no Flask converter equivalent all raise an
-error rather than producing a route that doesn't actually match what
-the original did.
+regex constraints with no matching converter on the other side all
+raise an error rather than producing a route that doesn't actually
+match what the original did.
 
 ## Running the tests
 
@@ -95,6 +121,7 @@ $ python -m unittest discover -s tests
 
 ## Status
 
-Early skeleton. Only Flask/Werkzeug and Express are supported (see
-the source for exactly which constraints translate). Standard
-library only, no dependencies.
+Early skeleton. Flask/Werkzeug, Django and Express are supported for
+conversion to and from each other via Express as the hub format (see
+the source for exactly which constraints translate). Standard library
+only, no dependencies.

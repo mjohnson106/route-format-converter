@@ -1,13 +1,20 @@
-"""Conversion between Flask/Werkzeug and Express-style route patterns.
+"""Conversion between Flask/Werkzeug, Django and Express-style route patterns.
 
-Flask writes a typed parameter as <converter:name> (converter optional,
-defaults to "string"). Express writes it as :name, followed by an
-optional (regex) constraint. The two are close enough that most rules
-convert cleanly, but not everything has an equivalent on the other
-side - Express wildcards and optional params, for instance, have no
-Flask counterpart, and arbitrary regex constraints have no Flask
-converter to map to. Those cases raise RouteSyntaxError rather than
-guessing.
+Flask and Django both write a typed parameter as <converter:name>
+(converter optional, defaulting to "string" in Flask and "str" in
+Django) - Django borrowed the syntax from Flask, but the two ship
+different converters (Django has no "float", Flask has no "slug") and
+some converters that exist in both use different regexes (uuid is
+case-insensitive in Flask, lowercase-only in Django). Express writes a
+parameter as :name, followed by an optional (regex) constraint. The
+formats are close enough that most rules convert cleanly, but not
+everything has an equivalent on the other side - Express wildcards and
+optional params have no bracket-syntax counterpart, and arbitrary
+regex constraints have no converter to map to. Those cases raise
+RouteSyntaxError rather than guessing.
+
+Only conversions to and from Express are implemented directly; going
+between Flask and Django isn't supported yet.
 """
 
 FLASK_CONVERTERS = {"string", "int", "float", "path", "uuid"}
@@ -20,6 +27,19 @@ _CONVERTER_TO_REGEX = {
 }
 
 _REGEX_TO_CONVERTER = {regex: name for name, regex in _CONVERTER_TO_REGEX.items()}
+
+DJANGO_CONVERTERS = {"str", "int", "slug", "uuid", "path"}
+
+_DJANGO_CONVERTER_TO_REGEX = {
+    "int": r"[0-9]+",
+    "slug": r"[-a-zA-Z0-9_]+",
+    "uuid": r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    "path": r".+",
+}
+
+_DJANGO_REGEX_TO_CONVERTER = {
+    regex: name for name, regex in _DJANGO_CONVERTER_TO_REGEX.items()
+}
 
 
 class RouteSyntaxError(Exception):
@@ -217,6 +237,177 @@ def express_to_flask(pattern, line=1):
                     line,
                     hint="supported constraints: "
                     + ", ".join(f"{v!r} -> {k}" for k, v in _CONVERTER_TO_REGEX.items()),
+                )
+            out.append(f"<{converter}:{name}>")
+
+    return "".join(out)
+
+
+def django_to_express(pattern, line=1):
+    """Convert a Django path pattern, e.g. '/users/<int:pk>', to an
+    Express-style path, e.g. '/users/:pk(\\d+)'.
+    """
+    out = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == ">":
+            raise RouteSyntaxError(
+                "unexpected '>' with no matching '<'", i + 1, pattern, line
+            )
+        if ch != "<":
+            out.append(ch)
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        body_start = i
+        while i < n and pattern[i] != ">":
+            i += 1
+        if i >= n:
+            raise RouteSyntaxError(
+                "unterminated parameter, expected a closing '>'",
+                start + 1,
+                pattern,
+                line,
+                hint="every '<' must be closed with '>'",
+            )
+        body = pattern[body_start:i]
+        i += 1  # skip '>'
+
+        first_colon = body.find(":")
+        second_colon = body.find(":", first_colon + 1) if first_colon != -1 else -1
+        if second_colon != -1:
+            raise RouteSyntaxError(
+                "too many ':' in parameter, expected '<converter:name>' or '<name>'",
+                body_start + second_colon + 1,
+                pattern,
+                line,
+            )
+
+        if first_colon != -1:
+            converter, name = body[:first_colon], body[first_colon + 1 :]
+            name_offset = body_start + first_colon + 1
+        else:
+            converter, name = "str", body
+            name_offset = body_start
+
+        if converter == "":
+            raise RouteSyntaxError(
+                "empty converter name before ':'", body_start + 1, pattern, line
+            )
+        if converter not in DJANGO_CONVERTERS:
+            raise RouteSyntaxError(
+                f"unknown converter {converter!r}",
+                body_start + 1,
+                pattern,
+                line,
+                hint="expected one of: " + ", ".join(sorted(DJANGO_CONVERTERS)),
+            )
+        if name == "":
+            raise RouteSyntaxError(
+                "empty parameter name", name_offset + 1, pattern, line
+            )
+        for offset, nch in enumerate(name):
+            if not _is_name_char(nch):
+                raise RouteSyntaxError(
+                    f"invalid character {nch!r} in parameter name",
+                    name_offset + offset + 1,
+                    pattern,
+                    line,
+                    hint="parameter names may only contain letters, digits and '_'",
+                )
+
+        regex = _DJANGO_CONVERTER_TO_REGEX.get(converter)
+        out.append(f":{name}({regex})" if regex else f":{name}")
+
+    return "".join(out)
+
+
+def express_to_django(pattern, line=1):
+    """Convert an Express-style path, e.g. '/users/:pk(\\d+)', to a
+    Django path pattern, e.g. '/users/<int:pk>'.
+    """
+    out = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "*":
+            raise RouteSyntaxError(
+                "wildcard segments ('*') have no equivalent in Django",
+                i + 1,
+                pattern,
+                line,
+                hint="use a '<path:...>' converter and adjust the view manually",
+            )
+        if ch != ":":
+            out.append(ch)
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        name_start = i
+        while i < n and _is_name_char(pattern[i]):
+            i += 1
+        name = pattern[name_start:i]
+        if name == "":
+            raise RouteSyntaxError(
+                "expected a parameter name after ':'", start + 1, pattern, line
+            )
+
+        regex = None
+        regex_start = None
+        if i < n and pattern[i] == "(":
+            regex_start = i
+            depth = 0
+            while i < n:
+                if pattern[i] == "\\":
+                    i += 2
+                    continue
+                if pattern[i] == "(":
+                    depth += 1
+                elif pattern[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                i += 1
+            else:
+                raise RouteSyntaxError(
+                    "unterminated regex constraint, expected a closing ')'",
+                    regex_start + 1,
+                    pattern,
+                    line,
+                )
+            regex = pattern[regex_start + 1 : i - 1]
+
+        if i < n and pattern[i] == "?":
+            raise RouteSyntaxError(
+                "optional parameters ('?') have no equivalent in Django",
+                i + 1,
+                pattern,
+                line,
+                hint="split this into two separate rules instead",
+            )
+
+        if regex is None:
+            out.append(f"<{name}>")
+        else:
+            converter = _DJANGO_REGEX_TO_CONVERTER.get(regex)
+            if converter is None:
+                raise RouteSyntaxError(
+                    f"regex constraint {regex!r} has no matching Django converter",
+                    regex_start + 2,
+                    pattern,
+                    line,
+                    hint="supported constraints: "
+                    + ", ".join(
+                        f"{v!r} -> {k}" for k, v in _DJANGO_CONVERTER_TO_REGEX.items()
+                    ),
                 )
             out.append(f"<{converter}:{name}>")
 

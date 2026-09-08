@@ -1,6 +1,12 @@
 import unittest
 
-from routeconv.converter import RouteSyntaxError, express_to_flask, flask_to_express
+from routeconv.converter import (
+    RouteSyntaxError,
+    django_to_express,
+    express_to_django,
+    express_to_flask,
+    flask_to_express,
+)
 
 
 class FlaskToExpressTests(unittest.TestCase):
@@ -155,6 +161,105 @@ class ExpressToFlaskTests(unittest.TestCase):
         self.assertIn("split", ctx.exception.hint)
 
 
+class DjangoToExpressTests(unittest.TestCase):
+    def test_no_parameters(self):
+        self.assertEqual(django_to_express("/health"), "/health")
+
+    def test_default_converter_is_str(self):
+        self.assertEqual(django_to_express("/users/<pk>"), "/users/:pk")
+
+    def test_explicit_str_converter_has_no_constraint(self):
+        self.assertEqual(django_to_express("/users/<str:pk>"), "/users/:pk")
+
+    def test_int_converter(self):
+        self.assertEqual(django_to_express("/users/<int:pk>"), "/users/:pk([0-9]+)")
+
+    def test_slug_converter(self):
+        self.assertEqual(
+            django_to_express("/posts/<slug:tag>"), "/posts/:tag([-a-zA-Z0-9_]+)"
+        )
+
+    def test_uuid_converter_is_lowercase_only(self):
+        self.assertEqual(
+            django_to_express("/items/<uuid:id>"),
+            "/items/:id([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            "[0-9a-f]{4}-[0-9a-f]{12})",
+        )
+
+    def test_path_converter(self):
+        self.assertEqual(
+            django_to_express("/files/<path:filepath>"), "/files/:filepath(.+)"
+        )
+
+    def test_float_is_not_a_django_converter(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            django_to_express("/prices/<float:amount>")
+        self.assertEqual(ctx.exception.column, 10)
+        self.assertIn("str", ctx.exception.hint)
+        self.assertNotIn("float", ctx.exception.hint)
+
+    def test_unterminated_parameter(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            django_to_express("/users/<int:pk/comments")
+        self.assertEqual(ctx.exception.column, 8)
+        self.assertIsNotNone(ctx.exception.hint)
+
+
+class ExpressToDjangoTests(unittest.TestCase):
+    def test_no_parameters(self):
+        self.assertEqual(express_to_django("/health"), "/health")
+
+    def test_parameter_without_constraint(self):
+        self.assertEqual(express_to_django("/users/:pk"), "/users/<pk>")
+
+    def test_int_constraint(self):
+        self.assertEqual(express_to_django("/users/:pk([0-9]+)"), "/users/<int:pk>")
+
+    def test_slug_constraint(self):
+        self.assertEqual(
+            express_to_django("/posts/:tag([-a-zA-Z0-9_]+)"), "/posts/<slug:tag>"
+        )
+
+    def test_uuid_constraint(self):
+        self.assertEqual(
+            express_to_django(
+                "/items/:id([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                "[0-9a-f]{4}-[0-9a-f]{12})"
+            ),
+            "/items/<uuid:id>",
+        )
+
+    def test_path_constraint(self):
+        self.assertEqual(
+            express_to_django("/files/:filepath(.+)"), "/files/<path:filepath>"
+        )
+
+    def test_flask_style_uuid_constraint_is_unmapped(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            express_to_django(
+                r"/items/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+            )
+        self.assertIsNotNone(ctx.exception.hint)
+
+    def test_wildcard_is_rejected(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            express_to_django("/files/*")
+        self.assertEqual(ctx.exception.column, 8)
+        self.assertIsNotNone(ctx.exception.hint)
+
+    def test_optional_parameter_is_rejected(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            express_to_django("/x/:id?")
+        self.assertEqual(ctx.exception.column, 7)
+
+    def test_unmapped_constraint(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            express_to_django("/x/:id(abc)")
+        self.assertEqual(ctx.exception.column, 8)
+        self.assertIsNotNone(ctx.exception.hint)
+
+
 class RoundTripTests(unittest.TestCase):
     PATTERNS = [
         "/health",
@@ -165,11 +270,26 @@ class RoundTripTests(unittest.TestCase):
         "/users/<int:id>/posts/<slug>",
     ]
 
+    DJANGO_PATTERNS = [
+        "/health",
+        "/users/<pk>",
+        "/users/<int:pk>",
+        "/posts/<slug:tag>",
+        "/files/<path:filepath>",
+        "/users/<int:pk>/posts/<slug:tag>",
+    ]
+
     def test_flask_express_flask(self):
         for pattern in self.PATTERNS:
             with self.subTest(pattern=pattern):
                 express = flask_to_express(pattern)
                 self.assertEqual(express_to_flask(express), pattern)
+
+    def test_django_express_django(self):
+        for pattern in self.DJANGO_PATTERNS:
+            with self.subTest(pattern=pattern):
+                express = django_to_express(pattern)
+                self.assertEqual(express_to_django(express), pattern)
 
 
 class RouteSyntaxErrorTests(unittest.TestCase):

@@ -6,6 +6,12 @@ from pathlib import Path
 from unittest import mock
 
 from routeconv.cli import convert_stream, main
+from routeconv.converter import (
+    django_to_express,
+    express_to_django,
+    express_to_flask,
+    flask_to_express,
+)
 
 
 class ConvertStreamTests(unittest.TestCase):
@@ -18,21 +24,33 @@ class ConvertStreamTests(unittest.TestCase):
             "   # indented comment\n"
             "/health\n"
         )
-        results, errors = convert_stream(handle, "express")
+        results, errors = convert_stream(handle, flask_to_express)
         self.assertEqual(results, [r"/users/:id(\d+)", "/health"])
         self.assertEqual(errors, [])
 
     def test_bad_line_does_not_stop_the_rest(self):
         handle = io.StringIO("/x/<foo:id>\n/users/<int:id>\n")
-        results, errors = convert_stream(handle, "express")
+        results, errors = convert_stream(handle, flask_to_express)
         self.assertEqual(results, [r"/users/:id(\d+)"])
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].line, 1)
 
     def test_to_flask(self):
         handle = io.StringIO(r"/users/:id(\d+)" + "\n")
-        results, errors = convert_stream(handle, "flask")
+        results, errors = convert_stream(handle, express_to_flask)
         self.assertEqual(results, ["/users/<int:id>"])
+        self.assertEqual(errors, [])
+
+    def test_to_django(self):
+        handle = io.StringIO(r"/users/:pk([0-9]+)" + "\n")
+        results, errors = convert_stream(handle, express_to_django)
+        self.assertEqual(results, ["/users/<int:pk>"])
+        self.assertEqual(errors, [])
+
+    def test_from_django(self):
+        handle = io.StringIO("/users/<int:pk>\n")
+        results, errors = convert_stream(handle, django_to_express)
+        self.assertEqual(results, [r"/users/:pk([0-9]+)"])
         self.assertEqual(errors, [])
 
 
@@ -64,6 +82,34 @@ class MainTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(out, r"/users/:id(\d+)" + "\n")
         self.assertIn(f"{path}:", err)
+
+    def test_explicit_from_to_django(self):
+        status, out, err = self._run(
+            ["--to", "django", "--from", "express"], r"/users/:pk([0-9]+)" + "\n"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(out, "/users/<int:pk>\n")
+        self.assertEqual(err, "")
+
+    def test_explicit_from_django_to_express(self):
+        status, out, err = self._run(
+            ["--to", "express", "--from", "django"], "/users/<int:pk>\n"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(out, r"/users/:pk([0-9]+)" + "\n")
+        self.assertEqual(err, "")
+
+    def test_django_without_explicit_from_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._run(["--to", "django"], "/health\n")
+
+    def test_unsupported_pair_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._run(["--to", "django", "--from", "flask"], "/health\n")
+
+    def test_same_from_and_to_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._run(["--to", "flask", "--from", "flask"], "/health\n")
 
 
 if __name__ == "__main__":
