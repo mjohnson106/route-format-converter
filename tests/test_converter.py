@@ -3,8 +3,10 @@ import unittest
 from routeconv.converter import (
     RouteSyntaxError,
     django_to_express,
+    django_to_flask,
     express_to_django,
     express_to_flask,
+    flask_to_django,
     flask_to_express,
 )
 
@@ -260,6 +262,82 @@ class ExpressToDjangoTests(unittest.TestCase):
         self.assertIsNotNone(ctx.exception.hint)
 
 
+class FlaskToDjangoTests(unittest.TestCase):
+    def test_no_parameters(self):
+        self.assertEqual(flask_to_django("/health"), "/health")
+
+    def test_default_converter_is_str(self):
+        self.assertEqual(flask_to_django("/users/<name>"), "/users/<name>")
+
+    def test_explicit_string_converter_has_no_prefix(self):
+        self.assertEqual(flask_to_django("/users/<string:name>"), "/users/<name>")
+
+    def test_int_converter(self):
+        self.assertEqual(flask_to_django("/users/<int:id>"), "/users/<int:id>")
+
+    def test_path_converter(self):
+        self.assertEqual(
+            flask_to_django("/files/<path:filepath>"), "/files/<path:filepath>"
+        )
+
+    def test_uuid_converter_stays_uuid(self):
+        self.assertEqual(flask_to_django("/items/<uuid:id>"), "/items/<uuid:id>")
+
+    def test_float_has_no_django_equivalent(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            flask_to_django("/prices/<float:amount>")
+        self.assertEqual(ctx.exception.column, 10)
+        self.assertIn("int", ctx.exception.hint)
+
+    def test_unknown_converter(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            flask_to_django("/x/<foo:id>")
+        self.assertEqual(ctx.exception.column, 5)
+
+    def test_unterminated_parameter(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            flask_to_django("/users/<int:id/comments")
+        self.assertEqual(ctx.exception.column, 8)
+
+
+class DjangoToFlaskTests(unittest.TestCase):
+    def test_no_parameters(self):
+        self.assertEqual(django_to_flask("/health"), "/health")
+
+    def test_default_converter_is_string(self):
+        self.assertEqual(django_to_flask("/users/<pk>"), "/users/<pk>")
+
+    def test_explicit_str_converter_has_no_prefix(self):
+        self.assertEqual(django_to_flask("/users/<str:pk>"), "/users/<pk>")
+
+    def test_int_converter(self):
+        self.assertEqual(django_to_flask("/users/<int:pk>"), "/users/<int:pk>")
+
+    def test_path_converter(self):
+        self.assertEqual(
+            django_to_flask("/files/<path:filepath>"), "/files/<path:filepath>"
+        )
+
+    def test_uuid_converter_stays_uuid(self):
+        self.assertEqual(django_to_flask("/items/<uuid:id>"), "/items/<uuid:id>")
+
+    def test_slug_has_no_flask_equivalent(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            django_to_flask("/posts/<slug:tag>")
+        self.assertEqual(ctx.exception.column, 9)
+        self.assertIn("string", ctx.exception.hint)
+
+    def test_unknown_converter(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            django_to_flask("/x/<foo:pk>")
+        self.assertEqual(ctx.exception.column, 5)
+
+    def test_unterminated_parameter(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            django_to_flask("/users/<int:pk/comments")
+        self.assertEqual(ctx.exception.column, 8)
+
+
 class RoundTripTests(unittest.TestCase):
     PATTERNS = [
         "/health",
@@ -290,6 +368,20 @@ class RoundTripTests(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 express = django_to_express(pattern)
                 self.assertEqual(express_to_django(express), pattern)
+
+    def test_flask_django_flask(self):
+        patterns = [
+            "/health",
+            "/users/<name>",
+            "/users/<int:id>",
+            "/files/<path:filepath>",
+            "/items/<uuid:id>",
+            "/users/<int:id>/posts/<name>",
+        ]
+        for pattern in patterns:
+            with self.subTest(pattern=pattern):
+                django = flask_to_django(pattern)
+                self.assertEqual(django_to_flask(django), pattern)
 
 
 class RouteSyntaxErrorTests(unittest.TestCase):

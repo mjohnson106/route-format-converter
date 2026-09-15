@@ -6,8 +6,10 @@ import sys
 from .converter import (
     RouteSyntaxError,
     django_to_express,
+    django_to_flask,
     express_to_django,
     express_to_flask,
+    flask_to_django,
     flask_to_express,
 )
 
@@ -16,6 +18,8 @@ _CONVERTERS = {
     ("express", "flask"): express_to_flask,
     ("django", "express"): django_to_express,
     ("express", "django"): express_to_django,
+    ("flask", "django"): flask_to_django,
+    ("django", "flask"): django_to_flask,
 }
 
 _FORMATS = ("flask", "express", "django")

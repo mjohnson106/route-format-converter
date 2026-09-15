@@ -10,6 +10,7 @@ from routeconv.converter import (
     django_to_express,
     express_to_django,
     express_to_flask,
+    flask_to_django,
     flask_to_express,
 )
 
@@ -51,6 +52,12 @@ class ConvertStreamTests(unittest.TestCase):
         handle = io.StringIO("/users/<int:pk>\n")
         results, errors = convert_stream(handle, django_to_express)
         self.assertEqual(results, [r"/users/:pk([0-9]+)"])
+        self.assertEqual(errors, [])
+
+    def test_flask_to_django_direct(self):
+        handle = io.StringIO("/users/<int:id>\n")
+        results, errors = convert_stream(handle, flask_to_django)
+        self.assertEqual(results, ["/users/<int:id>"])
         self.assertEqual(errors, [])
 
 
@@ -103,9 +110,21 @@ class MainTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(["--to", "django"], "/health\n")
 
-    def test_unsupported_pair_is_rejected(self):
-        with self.assertRaises(SystemExit):
-            self._run(["--to", "django", "--from", "flask"], "/health\n")
+    def test_explicit_from_flask_to_django(self):
+        status, out, err = self._run(
+            ["--to", "django", "--from", "flask"], "/users/<uuid:id>\n"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(out, "/users/<uuid:id>\n")
+        self.assertEqual(err, "")
+
+    def test_explicit_from_django_to_flask(self):
+        status, out, err = self._run(
+            ["--to", "flask", "--from", "django"], "/users/<int:pk>\n"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(out, "/users/<int:pk>\n")
+        self.assertEqual(err, "")
 
     def test_same_from_and_to_is_rejected(self):
         with self.assertRaises(SystemExit):

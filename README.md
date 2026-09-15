@@ -42,11 +42,17 @@ $ echo '/users/<int:pk>' | python -m routeconv --to express --from django
 
 $ echo '/users/:pk([0-9]+)' | python -m routeconv --to django --from express
 /users/<int:pk>
+
+$ echo '/users/<int:id>' | python -m routeconv --to django --from flask
+/users/<int:id>
 ```
 
-Only conversions to and from Express are implemented directly right
-now; converting straight between Flask and Django isn't supported yet
-(route it through Express as an intermediate).
+Flask and Django can also be converted directly into each other
+without going through Express - this matters for `uuid`, since Flask
+and Django both have a converter of that name but with slightly
+different underlying regexes, so a direct conversion keeps it as
+`uuid` on both sides instead of resolving it to a regex and looking
+that regex back up.
 
 Or convert a whole file of routes, one pattern per line (blank lines
 and lines starting with `#` are skipped):
@@ -122,6 +128,8 @@ $ python -m unittest discover -s tests
 ## Status
 
 Early skeleton. Flask/Werkzeug, Django and Express are supported for
-conversion to and from each other via Express as the hub format (see
-the source for exactly which constraints translate). Standard library
-only, no dependencies.
+conversion to and from each other - Flask and Express, and Django and
+Express, go through a regex lookup; Flask and Django convert directly
+by mapping converter names (see the source for exactly which
+constraints and converters translate). Standard library only, no
+dependencies.

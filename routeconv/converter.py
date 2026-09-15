@@ -13,8 +13,11 @@ optional params have no bracket-syntax counterpart, and arbitrary
 regex constraints have no converter to map to. Those cases raise
 RouteSyntaxError rather than guessing.
 
-Only conversions to and from Express are implemented directly; going
-between Flask and Django isn't supported yet.
+Flask and Django can also be converted directly into each other,
+mapping converter names rather than routing through a regex - this is
+more faithful than going via Express, since e.g. Flask's uuid and
+Django's uuid are the same converter name with slightly different
+underlying regexes, not a regex that has to be looked back up.
 """
 
 FLASK_CONVERTERS = {"string", "int", "float", "path", "uuid"}
@@ -40,6 +43,19 @@ _DJANGO_CONVERTER_TO_REGEX = {
 _DJANGO_REGEX_TO_CONVERTER = {
     regex: name for name, regex in _DJANGO_CONVERTER_TO_REGEX.items()
 }
+
+# Converters that mean the same thing in both frameworks, keyed by the
+# Flask name. Flask's "float" and Django's "slug" have no counterpart
+# and are deliberately left out; those raise RouteSyntaxError instead
+# of dropping the constraint.
+_FLASK_DJANGO_CONVERTER = {
+    "string": "str",
+    "int": "int",
+    "path": "path",
+    "uuid": "uuid",
+}
+
+_DJANGO_FLASK_CONVERTER = {name: flask for flask, name in _FLASK_DJANGO_CONVERTER.items()}
 
 
 class RouteSyntaxError(Exception):
@@ -239,6 +255,197 @@ def express_to_flask(pattern, line=1):
                     + ", ".join(f"{v!r} -> {k}" for k, v in _CONVERTER_TO_REGEX.items()),
                 )
             out.append(f"<{converter}:{name}>")
+
+    return "".join(out)
+
+
+def flask_to_django(pattern, line=1):
+    """Convert a Flask/Werkzeug rule, e.g. '/users/<int:id>', directly
+    to a Django path pattern, e.g. '/users/<int:id>'.
+
+    Maps converter names rather than routing through Express, so a
+    converter that means the same thing in both frameworks (uuid,
+    path, ...) round-trips as itself instead of as a regex lookup.
+    """
+    out = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == ">":
+            raise RouteSyntaxError(
+                "unexpected '>' with no matching '<'", i + 1, pattern, line
+            )
+        if ch != "<":
+            out.append(ch)
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        body_start = i
+        while i < n and pattern[i] != ">":
+            i += 1
+        if i >= n:
+            raise RouteSyntaxError(
+                "unterminated parameter, expected a closing '>'",
+                start + 1,
+                pattern,
+                line,
+                hint="every '<' must be closed with '>'",
+            )
+        body = pattern[body_start:i]
+        i += 1  # skip '>'
+
+        first_colon = body.find(":")
+        second_colon = body.find(":", first_colon + 1) if first_colon != -1 else -1
+        if second_colon != -1:
+            raise RouteSyntaxError(
+                "too many ':' in parameter, expected '<converter:name>' or '<name>'",
+                body_start + second_colon + 1,
+                pattern,
+                line,
+            )
+
+        if first_colon != -1:
+            converter, name = body[:first_colon], body[first_colon + 1 :]
+            name_offset = body_start + first_colon + 1
+        else:
+            converter, name = "string", body
+            name_offset = body_start
+
+        if converter == "":
+            raise RouteSyntaxError(
+                "empty converter name before ':'", body_start + 1, pattern, line
+            )
+        if converter not in FLASK_CONVERTERS:
+            raise RouteSyntaxError(
+                f"unknown converter {converter!r}",
+                body_start + 1,
+                pattern,
+                line,
+                hint="expected one of: " + ", ".join(sorted(FLASK_CONVERTERS)),
+            )
+        if name == "":
+            raise RouteSyntaxError(
+                "empty parameter name", name_offset + 1, pattern, line
+            )
+        for offset, nch in enumerate(name):
+            if not _is_name_char(nch):
+                raise RouteSyntaxError(
+                    f"invalid character {nch!r} in parameter name",
+                    name_offset + offset + 1,
+                    pattern,
+                    line,
+                    hint="parameter names may only contain letters, digits and '_'",
+                )
+
+        django_converter = _FLASK_DJANGO_CONVERTER.get(converter)
+        if django_converter is None:
+            raise RouteSyntaxError(
+                f"Flask converter {converter!r} has no Django equivalent",
+                body_start + 1,
+                pattern,
+                line,
+                hint="Django has no floating point converter; use 'int' or "
+                "accept it as a string and parse it in the view",
+            )
+        out.append(f"<{name}>" if django_converter == "str" else f"<{django_converter}:{name}>")
+
+    return "".join(out)
+
+
+def django_to_flask(pattern, line=1):
+    """Convert a Django path pattern, e.g. '/users/<int:pk>', directly
+    to a Flask/Werkzeug rule, e.g. '/users/<int:pk>'.
+
+    Maps converter names rather than routing through Express, for the
+    same reason as flask_to_django.
+    """
+    out = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == ">":
+            raise RouteSyntaxError(
+                "unexpected '>' with no matching '<'", i + 1, pattern, line
+            )
+        if ch != "<":
+            out.append(ch)
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        body_start = i
+        while i < n and pattern[i] != ">":
+            i += 1
+        if i >= n:
+            raise RouteSyntaxError(
+                "unterminated parameter, expected a closing '>'",
+                start + 1,
+                pattern,
+                line,
+                hint="every '<' must be closed with '>'",
+            )
+        body = pattern[body_start:i]
+        i += 1  # skip '>'
+
+        first_colon = body.find(":")
+        second_colon = body.find(":", first_colon + 1) if first_colon != -1 else -1
+        if second_colon != -1:
+            raise RouteSyntaxError(
+                "too many ':' in parameter, expected '<converter:name>' or '<name>'",
+                body_start + second_colon + 1,
+                pattern,
+                line,
+            )
+
+        if first_colon != -1:
+            converter, name = body[:first_colon], body[first_colon + 1 :]
+            name_offset = body_start + first_colon + 1
+        else:
+            converter, name = "str", body
+            name_offset = body_start
+
+        if converter == "":
+            raise RouteSyntaxError(
+                "empty converter name before ':'", body_start + 1, pattern, line
+            )
+        if converter not in DJANGO_CONVERTERS:
+            raise RouteSyntaxError(
+                f"unknown converter {converter!r}",
+                body_start + 1,
+                pattern,
+                line,
+                hint="expected one of: " + ", ".join(sorted(DJANGO_CONVERTERS)),
+            )
+        if name == "":
+            raise RouteSyntaxError(
+                "empty parameter name", name_offset + 1, pattern, line
+            )
+        for offset, nch in enumerate(name):
+            if not _is_name_char(nch):
+                raise RouteSyntaxError(
+                    f"invalid character {nch!r} in parameter name",
+                    name_offset + offset + 1,
+                    pattern,
+                    line,
+                    hint="parameter names may only contain letters, digits and '_'",
+                )
+
+        flask_converter = _DJANGO_FLASK_CONVERTER.get(converter)
+        if flask_converter is None:
+            raise RouteSyntaxError(
+                f"Django converter {converter!r} has no Flask equivalent",
+                body_start + 1,
+                pattern,
+                line,
+                hint="Flask has no slug converter; use 'string' and validate "
+                "the slug format in the view",
+            )
+        out.append(f"<{name}>" if flask_converter == "string" else f"<{flask_converter}:{name}>")
 
     return "".join(out)
 
