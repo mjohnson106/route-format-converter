@@ -8,14 +8,14 @@ from .converter import (
     django_to_express,
     django_to_flask,
     express_to_django,
-    express_to_flask,
+    express_to_flask_rules,
     flask_to_django,
     flask_to_express,
 )
 
 _CONVERTERS = {
     ("flask", "express"): flask_to_express,
-    ("express", "flask"): express_to_flask,
+    ("express", "flask"): express_to_flask_rules,
     ("django", "express"): django_to_express,
     ("express", "django"): express_to_django,
     ("flask", "django"): flask_to_django,
@@ -43,14 +43,23 @@ def convert_stream(handle, convert):
 
     Returns (results, errors) rather than raising, so one bad line in
     a large route file doesn't stop the rest from being converted.
+    convert may return either a single pattern or a list of patterns
+    (express_to_flask_rules returns one rule per line, expanded per
+    optional parameter), so a list result is flattened into results
+    rather than appended as one entry.
     """
     results = []
     errors = []
     for lineno, text in _iter_lines(handle):
         try:
-            results.append(convert(text, line=lineno))
+            converted = convert(text, line=lineno)
         except RouteSyntaxError as exc:
             errors.append(exc)
+            continue
+        if isinstance(converted, list):
+            results.extend(converted)
+        else:
+            results.append(converted)
     return results, errors
 
 

@@ -8,10 +8,14 @@ some converters that exist in both use different regexes (uuid is
 case-insensitive in Flask, lowercase-only in Django). Express writes a
 parameter as :name, followed by an optional (regex) constraint. The
 formats are close enough that most rules convert cleanly, but not
-everything has an equivalent on the other side - Express wildcards and
-optional params have no bracket-syntax counterpart, and arbitrary
-regex constraints have no converter to map to. Those cases raise
-RouteSyntaxError rather than guessing.
+everything has an equivalent on the other side - Express wildcards
+have no bracket-syntax counterpart, and arbitrary regex constraints
+have no converter to map to. Those cases raise RouteSyntaxError rather
+than guessing. Express optional params (:name?) are the one exception:
+there's no single Flask rule that means "this segment might not be
+there", but a pair of Flask rules (one with the segment, one without)
+covers the same URLs, so express_to_flask_rules expands into those
+instead of raising.
 
 Flask and Django can also be converted directly into each other,
 mapping converter names rather than routing through a regex - this is
@@ -19,6 +23,8 @@ more faithful than going via Express, since e.g. Flask's uuid and
 Django's uuid are the same converter name with slightly different
 underlying regexes, not a regex that has to be looked back up.
 """
+
+import itertools
 
 FLASK_CONVERTERS = {"string", "int", "float", "path", "uuid"}
 
@@ -257,6 +263,139 @@ def express_to_flask(pattern, line=1):
             out.append(f"<{converter}:{name}>")
 
     return "".join(out)
+
+
+def _tokenize_express_with_optionals(pattern, line):
+    """Parse an Express path into a list of ('lit', text) and
+    ('param', name, converter, optional, slash_prefix) tokens.
+
+    Unlike express_to_flask, a trailing '?' on a parameter does not
+    raise - it's recorded on the token instead, along with whether the
+    '/' immediately before the parameter belongs to it (so that '/'
+    can be dropped too when the parameter is left out).
+    """
+    tokens = []
+    literal = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "*":
+            raise RouteSyntaxError(
+                "wildcard segments ('*') have no equivalent in Flask/Werkzeug",
+                i + 1,
+                pattern,
+                line,
+                hint="use a '<path:...>' converter and adjust the view manually",
+            )
+        if ch != ":":
+            literal.append(ch)
+            i += 1
+            continue
+
+        start = i
+        i += 1
+        name_start = i
+        while i < n and _is_name_char(pattern[i]):
+            i += 1
+        name = pattern[name_start:i]
+        if name == "":
+            raise RouteSyntaxError(
+                "expected a parameter name after ':'", start + 1, pattern, line
+            )
+
+        regex = None
+        regex_start = None
+        if i < n and pattern[i] == "(":
+            regex_start = i
+            depth = 0
+            while i < n:
+                if pattern[i] == "\\":
+                    i += 2
+                    continue
+                if pattern[i] == "(":
+                    depth += 1
+                elif pattern[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                i += 1
+            else:
+                raise RouteSyntaxError(
+                    "unterminated regex constraint, expected a closing ')'",
+                    regex_start + 1,
+                    pattern,
+                    line,
+                )
+            regex = pattern[regex_start + 1 : i - 1]
+
+        optional = False
+        if i < n and pattern[i] == "?":
+            optional = True
+            i += 1
+
+        converter = None
+        if regex is not None:
+            converter = _REGEX_TO_CONVERTER.get(regex)
+            if converter is None:
+                raise RouteSyntaxError(
+                    f"regex constraint {regex!r} has no matching Flask converter",
+                    regex_start + 2,
+                    pattern,
+                    line,
+                    hint="supported constraints: "
+                    + ", ".join(f"{v!r} -> {k}" for k, v in _CONVERTER_TO_REGEX.items()),
+                )
+
+        slash_prefix = optional and bool(literal) and literal[-1] == "/"
+        if slash_prefix:
+            literal.pop()
+
+        if literal:
+            tokens.append(("lit", "".join(literal)))
+            literal = []
+        tokens.append(("param", name, converter, optional, slash_prefix))
+
+    if literal:
+        tokens.append(("lit", "".join(literal)))
+    return tokens
+
+
+def express_to_flask_rules(pattern, line=1):
+    """Convert an Express-style path into every Flask/Werkzeug rule
+    needed to cover the same URLs, expanding optional parameters
+    (':name?') into one rule with the segment and one without it, e.g.
+    '/users/:id?' becomes ['/users/<id>', '/users'].
+
+    With more than one optional parameter this produces one rule per
+    combination of present/absent, in the same order as itertools
+    would enumerate them (all present first, all absent last).
+    """
+    tokens = _tokenize_express_with_optionals(pattern, line)
+    optional_positions = [i for i, t in enumerate(tokens) if t[0] == "param" and t[3]]
+
+    rules = []
+    seen = set()
+    for presence in itertools.product((True, False), repeat=len(optional_positions)):
+        present = dict(zip(optional_positions, presence))
+        parts = []
+        for i, token in enumerate(tokens):
+            if token[0] == "lit":
+                parts.append(token[1])
+                continue
+            _, name, converter, optional, slash_prefix = token
+            if optional and not present[i]:
+                continue
+            piece = f"<{converter}:{name}>" if converter else f"<{name}>"
+            if optional and slash_prefix:
+                piece = "/" + piece
+            parts.append(piece)
+        rule = "".join(parts) or "/"
+        if rule not in seen:
+            seen.add(rule)
+            rules.append(rule)
+    return rules
 
 
 def flask_to_django(pattern, line=1):

@@ -6,6 +6,7 @@ from .converter import (
     django_to_flask,
     express_to_django,
     express_to_flask,
+    express_to_flask_rules,
     flask_to_django,
     flask_to_express,
 )
@@ -14,6 +15,7 @@ __version__ = "0.1.0"
 __all__ = [
     "flask_to_express",
     "express_to_flask",
+    "express_to_flask_rules",
     "django_to_express",
     "express_to_django",
     "flask_to_django",

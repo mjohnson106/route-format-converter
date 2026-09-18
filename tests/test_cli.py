@@ -10,6 +10,7 @@ from routeconv.converter import (
     django_to_express,
     express_to_django,
     express_to_flask,
+    express_to_flask_rules,
     flask_to_django,
     flask_to_express,
 )
@@ -58,6 +59,12 @@ class ConvertStreamTests(unittest.TestCase):
         handle = io.StringIO("/users/<int:id>\n")
         results, errors = convert_stream(handle, flask_to_django)
         self.assertEqual(results, ["/users/<int:id>"])
+        self.assertEqual(errors, [])
+
+    def test_list_results_are_flattened(self):
+        handle = io.StringIO("/users/:id?\n/health\n")
+        results, errors = convert_stream(handle, express_to_flask_rules)
+        self.assertEqual(results, ["/users/<id>", "/users", "/health"])
         self.assertEqual(errors, [])
 
 
@@ -129,6 +136,12 @@ class MainTests(unittest.TestCase):
     def test_same_from_and_to_is_rejected(self):
         with self.assertRaises(SystemExit):
             self._run(["--to", "flask", "--from", "flask"], "/health\n")
+
+    def test_express_optional_param_expands_to_multiple_flask_lines(self):
+        status, out, err = self._run(["--to", "flask"], "/users/:id?\n")
+        self.assertEqual(status, 0)
+        self.assertEqual(out, "/users/<id>\n/users\n")
+        self.assertEqual(err, "")
 
 
 if __name__ == "__main__":

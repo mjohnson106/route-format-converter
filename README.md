@@ -114,10 +114,26 @@ and every error goes to stderr with its own line number.
 | `<uuid:x>`   | `:x([0-9a-f]{8}-...)`    |
 | `<path:x>`   | `:x(.+)`                  |
 
-Express wildcards (`*`), optional segments (`:x?`), and arbitrary
-regex constraints with no matching converter on the other side all
-raise an error rather than producing a route that doesn't actually
-match what the original did.
+Express wildcards (`*`) and arbitrary regex constraints with no
+matching converter on the other side raise an error rather than
+producing a route that doesn't actually match what the original did.
+
+Express optional segments (`:x?`) are handled instead of rejected when
+converting to Flask: since Flask has no way to say "this segment might
+not be there", the tool emits one rule with the segment and one
+without, and the CLI prints both:
+
+```
+$ echo '/users/:id?' | python -m routeconv --to flask
+/users/<id>
+/users
+```
+
+A pattern with more than one optional segment expands into one rule
+per combination of present/absent segments. This expansion only
+happens for the Flask target - `express_to_flask_rules` in the library
+does it directly, while plain `express_to_flask` still raises on `?`
+for callers that want a strict one-line-in, one-line-out conversion.
 
 ## Running the tests
 

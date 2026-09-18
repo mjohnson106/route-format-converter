@@ -6,6 +6,7 @@ from routeconv.converter import (
     django_to_flask,
     express_to_django,
     express_to_flask,
+    express_to_flask_rules,
     flask_to_django,
     flask_to_express,
 )
@@ -161,6 +162,54 @@ class ExpressToFlaskTests(unittest.TestCase):
             express_to_flask(r"/x/:id(\d+)?")
         self.assertEqual(ctx.exception.column, 12)
         self.assertIn("split", ctx.exception.hint)
+
+
+class ExpressToFlaskRulesTests(unittest.TestCase):
+    def test_no_optional_parameters_returns_single_rule(self):
+        self.assertEqual(
+            express_to_flask_rules(r"/users/:id(\d+)"), ["/users/<int:id>"]
+        )
+
+    def test_trailing_optional_parameter_without_constraint(self):
+        self.assertEqual(
+            express_to_flask_rules("/users/:id?"), ["/users/<id>", "/users"]
+        )
+
+    def test_trailing_optional_parameter_with_constraint(self):
+        self.assertEqual(
+            express_to_flask_rules(r"/users/:id(\d+)?"),
+            ["/users/<int:id>", "/users"],
+        )
+
+    def test_optional_parameter_not_preceded_by_slash_only_drops_itself(self):
+        self.assertEqual(
+            express_to_flask_rules(":name?-suffix"),
+            ["<name>-suffix", "-suffix"],
+        )
+
+    def test_two_optional_parameters_expand_to_four_rules(self):
+        self.assertEqual(
+            express_to_flask_rules("/a/:x?/b/:y?"),
+            [
+                "/a/<x>/b/<y>",
+                "/a/<x>/b",
+                "/a/b/<y>",
+                "/a/b",
+            ],
+        )
+
+    def test_whole_pattern_optional_falls_back_to_root(self):
+        self.assertEqual(express_to_flask_rules("/:id?"), ["/<id>", "/"])
+
+    def test_wildcard_is_still_rejected(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            express_to_flask_rules("/files/*")
+        self.assertEqual(ctx.exception.column, 8)
+
+    def test_unmapped_constraint_is_still_rejected(self):
+        with self.assertRaises(RouteSyntaxError) as ctx:
+            express_to_flask_rules("/x/:id(abc)?")
+        self.assertEqual(ctx.exception.column, 8)
 
 
 class DjangoToExpressTests(unittest.TestCase):
